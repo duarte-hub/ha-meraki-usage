@@ -1,5 +1,5 @@
-/* meraki-usage-card: Sankey of today's internet usage (line → home → device → app) */
-const MUC_VERSION = "0.1.0";
+/* meraki-usage-card: Sankey of today's internet usage (line \u2192 home \u2192 device \u2192 app) */
+const MUC_VERSION = "0.1.1";
 
 const DEVICE_COLORS = ["#4fc3f7", "#b39ddb", "#f06292", "#4db6ac", "#ffb74d", "#ff8a65",
   "#7986cb", "#aed581", "#e57373", "#9575cd", "#4dd0e1", "#dce775", "#a1887f", "#90a4ae",
@@ -121,35 +121,45 @@ class MerakiUsageCard extends HTMLElement {
 
   _sankey(m) {
     const W = 1000, H = this._config.height, NW = 12, PAD = 7;
-    const X = [150, 400, 620, 840];
+    const X = [130, 370, 580, 790];
     const cols = [m.lines, [m.home], m.devs, m.apps];
+    const total = m.home.v || 1;
     let k = Infinity;
     cols.forEach((c) => {
       const t = c.reduce((s, n) => s + n.v, 0);
       if (t > 0) k = Math.min(k, (H - PAD * Math.max(c.length - 1, 0)) / t);
     });
     if (!isFinite(k)) k = 0;
+    this._info = {};
     cols.forEach((c, ci) => {
       const used = c.reduce((s, n) => s + Math.max(n.v * k, 2), 0) + PAD * (c.length - 1);
       let y = (H - used) / 2;
-      c.forEach((n) => { n.x = X[ci]; n.y = y; n.h = Math.max(n.v * k, 2); n.out = 0; n.in = 0; y += n.h + PAD; });
+      c.forEach((n, i) => {
+        n.key = `n${ci}_${i}`; n.x = X[ci]; n.y = y; n.h = Math.max(n.v * k, 2); n.out = 0; n.in = 0; y += n.h + PAD;
+        let sub = `${fmt(n.v)} \u00b7 ${((n.v / total) * 100).toFixed(1)}% of today`;
+        if (n.down != null && n.up != null) sub += `<br>\u2193 ${fmt(n.down)} &nbsp; \u2191 ${fmt(n.up)}`;
+        if (n.nbd) sub += `<br>Counted on the uplinks, not tied to a client`;
+        this._info[n.key] = { title: esc(n.name), sub, color: n.color };
+      });
     });
 
-    const band = (s, t, v, color, title) => {
+    const path = (x0, y0, x1, y1, h, color, op, s, t, tip) => {
+      const mx = (x0 + x1) / 2;
+      return `<path class="lk" data-s="${s}" data-t="${t}" data-tip="${esc(tip)}" d="M${x0},${y0} C${mx},${y0} ${mx},${y1} ${x1},${y1} L${x1},${y1 + h} C${mx},${y1 + h} ${mx},${y0 + h} ${x0},${y0 + h} Z" fill="${color}" fill-opacity="${op}"/>`;
+    };
+    const band = (s, t, v, color) => {
       const h = v * k;
       if (h < 0.3) return "";
-      const x0 = s.x + NW, x1 = t.x;
-      const y0 = s.y + s.out, y1 = t.y + t.in;
+      const out = path(s.x + NW, s.y + s.out, t.x, t.y + t.in, h, color, 0.38, s.key, t.key,
+        `${s.name} \u2192 ${t.name}|${fmt(v)} \u00b7 ${((v / total) * 100).toFixed(1)}%`);
       s.out += h; t.in += h;
-      const mx = (x0 + x1) / 2;
-      return `<path d="M${x0},${y0} C${mx},${y0} ${mx},${y1} ${x1},${y1} L${x1},${y1 + h} C${mx},${y1 + h} ${mx},${y0 + h} ${x0},${y0 + h} Z" fill="${color}" fill-opacity="0.38"><title>${esc(title)}: ${fmt(v)}</title></path>`;
+      return out;
     };
 
     let links = "";
-    m.lines.forEach((l) => (links += band(l, m.home, l.v, l.color, `${l.name} → Home`)));
-    m.devs.forEach((d) => (links += band(m.home, d, d.v, d.color, `Home → ${d.name}`)));
+    m.lines.forEach((l) => (links += band(l, m.home, l.v, l.color)));
+    m.devs.forEach((d) => (links += band(m.home, d, d.v, d.color)));
     const byDev = [...m.devAppLinks].sort((p, q) => p.s - q.s || p.t - q.t);
-    // target-side order: by app, then device, so bands enter apps in device order
     const tOrder = [...byDev].sort((p, q) => p.t - q.t || p.s - q.s);
     const tOff = new Map();
     m.apps.forEach((a) => (a.in = 0));
@@ -157,27 +167,75 @@ class MerakiUsageCard extends HTMLElement {
     byDev.forEach((l) => {
       const d = m.devs[l.s], a = m.apps[l.t];
       if (!d || !a) return;
-      const h = l.v * k; if (h < 0.3) { d.out += h; return; }
-      const x0 = d.x + NW, x1 = a.x, y0 = d.y + d.out, y1 = a.y + tOff.get(l), mx = (x0 + x1) / 2;
+      const h = l.v * k;
+      if (h >= 0.3) links += path(d.x + NW, d.y + d.out, a.x, a.y + tOff.get(l), h, d.color, 0.32, d.key, a.key,
+        `${d.name} \u2192 ${a.name}|${fmt(l.v)} \u00b7 ${((l.v / (d.v || 1)) * 100).toFixed(0)}% of ${d.name}`);
       d.out += h;
-      links += `<path d="M${x0},${y0} C${mx},${y0} ${mx},${y1} ${x1},${y1} L${x1},${y1 + h} C${mx},${y1 + h} ${mx},${y0 + h} ${x0},${y0 + h} Z" fill="${d.color}" fill-opacity="0.32"><title>${esc(d.name)} → ${esc(a.name)}: ${fmt(l.v)}</title></path>`;
     });
 
+    const short = (s, n) => (s.length > n ? s.slice(0, n - 1) + "\u2026" : s);
     let nodes = "";
     cols.forEach((c, ci) => c.forEach((n) => {
-      nodes += `<rect x="${n.x}" y="${n.y}" width="${NW}" height="${n.h}" rx="2" fill="${n.color}"><title>${esc(n.name)}: ${fmt(n.v)}</title></rect>`;
-      const big = n.h >= 14 || ci === 0 || ci === 1;
+      nodes += `<rect class="nd" data-n="${n.key}" x="${n.x}" y="${n.y}" width="${NW}" height="${n.h}" rx="2" fill="${n.color}"/>`;
+      const big = n.h >= 14 || ci < 2;
       if (!big && n.h < 7) return;
-      const fs = n.h >= 14 || ci < 2 ? 14 : 11;
-      const ty = n.y + n.h / 2;
+      const fs = big ? 14 : 11;
       const left = ci === 0;
       const tx = left ? n.x - 8 : n.x + NW + 8;
-      nodes += `<text x="${tx}" y="${ty}" dy="0.35em" text-anchor="${left ? "end" : "start"}" font-size="${fs}"><tspan class="n">${esc(n.name)}</tspan> <tspan class="v">${fmt(n.v)}</tspan></text>`;
+      const label = ci >= 2 ? short(n.name, ci === 3 ? 22 : 26) : n.name;
+      nodes += `<text class="lb" data-n="${n.key}" x="${tx}" y="${n.y + n.h / 2}" dy="0.35em" text-anchor="${left ? "end" : "start"}" font-size="${fs}"><tspan class="n">${esc(label)}</tspan> <tspan class="v">${fmt(n.v)}</tspan></text>`;
     }));
 
     const heads = ["INTERNET LINE", "HOME", "DEVICE", "APP"].map((t, i) =>
       `<text x="${X[i] + NW / 2}" y="-14" text-anchor="middle" class="head">${t}</text>`).join("");
-    return `<svg viewBox="-10 -30 ${W + 10} ${H + 40}" preserveAspectRatio="xMidYMid meet">${heads}${links}${nodes}</svg>`;
+    return `<svg viewBox="-10 -30 ${W + 10} ${H + 40}" preserveAspectRatio="xMidYMid meet">${heads}<g class="links">${links}</g>${nodes}</svg>`;
+  }
+
+  _bind() {
+    const wrap = this.shadowRoot.querySelector(".sankey");
+    if (!wrap) return;
+    const svg = wrap.querySelector("svg");
+    const tip = wrap.querySelector(".tip");
+    let pinned = null;
+    const clear = () => {
+      svg.classList.remove("hl");
+      svg.querySelectorAll(".on").forEach((e) => e.classList.remove("on"));
+      tip.style.display = "none";
+    };
+    const show = (el, ev) => {
+      svg.querySelectorAll(".on").forEach((e) => e.classList.remove("on"));
+      svg.classList.add("hl");
+      let title, sub, color;
+      if (el.classList.contains("lk")) {
+        el.classList.add("on");
+        [el.dataset.s, el.dataset.t].forEach((n) => svg.querySelectorAll(`[data-n="${n}"]`).forEach((e) => e.classList.add("on")));
+        [title, sub] = el.dataset.tip.split("|");
+        color = el.getAttribute("fill");
+      } else {
+        const n = el.dataset.n;
+        svg.querySelectorAll(`[data-n="${n}"]`).forEach((e) => e.classList.add("on"));
+        svg.querySelectorAll(`.lk[data-s="${n}"], .lk[data-t="${n}"]`).forEach((p) => {
+          p.classList.add("on");
+          [p.dataset.s, p.dataset.t].forEach((o) => svg.querySelectorAll(`[data-n="${o}"]`).forEach((e) => e.classList.add("on")));
+        });
+        ({ title, sub, color } = this._info[n] || {});
+      }
+      tip.innerHTML = `<div class="tt"><span class="dot" style="background:${color}"></span>${title}</div><div class="ts">${sub}</div>`;
+      tip.style.display = "block";
+      const r = wrap.getBoundingClientRect();
+      let x = ev.clientX - r.left + 14, y = ev.clientY - r.top + 14;
+      if (x + tip.offsetWidth > r.width) x = ev.clientX - r.left - tip.offsetWidth - 14;
+      if (y + tip.offsetHeight > r.height) y = ev.clientY - r.top - tip.offsetHeight - 14;
+      tip.style.left = `${Math.max(0, x)}px`; tip.style.top = `${Math.max(0, y)}px`;
+    };
+    const target = (ev) => ev.target.closest(".lk, [data-n]");
+    svg.addEventListener("mousemove", (ev) => { if (pinned) return; const el = target(ev); el ? show(el, ev) : clear(); });
+    svg.addEventListener("mouseleave", () => { if (!pinned) clear(); });
+    svg.addEventListener("click", (ev) => {
+      const el = target(ev);
+      if (!el || pinned === el) { pinned = null; clear(); return; }
+      pinned = el; show(el, ev);
+    });
   }
 
   _strip(todayGB) {
@@ -193,7 +251,7 @@ class MerakiUsageCard extends HTMLElement {
       let v = map.get(d.toDateString());
       if (i === 0 && todayGB != null) v = todayGB;
       const has = v != null && v > 0;
-      const val = has ? (v >= 10 ? Math.round(v) : v.toFixed(1)) : "—";
+      const val = has ? (v >= 10 ? Math.round(v) : v.toFixed(1)) : "\u2014";
       cells.push(`<div class="day ${i === 0 ? "today" : ""} ${has ? "has" : ""}" title="${d.toLocaleDateString()}${has ? ": " + v.toFixed(2) + " GB" : ""}"><span class="dn">${String(d.getDate()).padStart(2, "0")}</span><span class="dv">${val}</span></div>`);
     }
     return cells.join("");
@@ -206,7 +264,7 @@ class MerakiUsageCard extends HTMLElement {
     if (!st) {
       body = `<div class="empty">Entity ${esc(this._config.entity)} not found</div>`;
     } else if (st.state === "unavailable" || st.state === "unknown") {
-      body = `<div class="empty">Waiting for data from Meraki…</div>`;
+      body = `<div class="empty">Waiting for data from Meraki\u2026</div>`;
     } else {
       const a = st.attributes;
       const totalGB = parseFloat(st.state);
@@ -219,11 +277,11 @@ class MerakiUsageCard extends HTMLElement {
       const nbd = (a.not_broken_down || 0) > 0
         ? `<div class="note">"Not broken down" is internet use the MX counted on its uplinks but couldn't tie to a client.</div>` : "";
       body = `
-        <div class="sub">Internet lines: ${fmt(totalGB * 1e9)} today · devices and apps since midnight · updated ${esc(upd)}</div>
-        <div class="sankey">${this._sankey(m)}</div>
+        <div class="sub">Internet lines: ${fmt(totalGB * 1e9)} today \u00b7 devices and apps since midnight \u00b7 updated ${esc(upd)}</div>
+        <div class="sankey">${this._sankey(m)}<div class="tip"></div></div>
         ${nbd}
-        <table><thead><tr><th>Device</th><th>↓ Down</th><th>↑ Up</th><th>Top apps</th></tr></thead><tbody>${rows}</tbody></table>
-        <div class="sub">Last ${this._config.days} days · GB per day</div>
+        <table><thead><tr><th>Device</th><th>\u2193 Down</th><th>\u2191 Up</th><th>Top apps</th></tr></thead><tbody>${rows}</tbody></table>
+        <div class="sub">Last ${this._config.days} days \u00b7 GB per day</div>
         <div class="strip">${this._strip(totalGB)}</div>`;
     }
     this.shadowRoot.innerHTML = `
@@ -234,6 +292,15 @@ class MerakiUsageCard extends HTMLElement {
         .sankey svg { width: 100%; height: auto; display: block; }
         .sankey text { fill: var(--primary-text-color); font-family: inherit; }
         .sankey text .v { fill: var(--secondary-text-color); font-size: 0.85em; }
+        .sankey { position: relative; }
+        .sankey .lk, .sankey .nd, .sankey .lb { cursor: pointer; transition: opacity .15s, fill-opacity .15s; }
+        .sankey svg.hl .lk { fill-opacity: .07; }
+        .sankey svg.hl .lk.on { fill-opacity: .6; }
+        .sankey svg.hl .nd, .sankey svg.hl .lb { opacity: .25; }
+        .sankey svg.hl .nd.on, .sankey svg.hl .lb.on { opacity: 1; }
+        .tip { display: none; position: absolute; pointer-events: none; z-index: 2; background: var(--card-background-color, #1c1c1c); border: 1px solid var(--divider-color); border-radius: 8px; padding: 8px 10px; font-size: 12px; box-shadow: 0 4px 12px rgba(0,0,0,.35); max-width: 260px; }
+        .tip .tt { font-weight: 600; color: var(--primary-text-color); margin-bottom: 2px; }
+        .tip .ts { color: var(--secondary-text-color); line-height: 1.5; }
         .sankey text.head { fill: var(--secondary-text-color); font-size: 12px; letter-spacing: 1.5px; }
         .note { font-size: 12px; color: var(--secondary-text-color); background: var(--secondary-background-color); border-radius: 8px; padding: 8px 12px; margin: 10px 0; }
         table { width: 100%; border-collapse: collapse; font-size: 13px; margin: 8px 0 16px; }
@@ -252,6 +319,7 @@ class MerakiUsageCard extends HTMLElement {
         .empty { padding: 24px; color: var(--secondary-text-color); }
       </style>
       <ha-card><div class="title">${esc(this._config.title || "Data usage today")}</div>${body}</ha-card>`;
+    this._bind();
   }
 
   static getStubConfig() { return { entity: "sensor.meraki_data_usage_internet_usage_today" }; }

@@ -47,6 +47,30 @@ class MerakiUsageCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._day = None
         self._max_total = 0
 
+    @staticmethod
+    def _index_app_rows(rows, by_key: dict, force_key: str | None = None) -> None:
+        """Index applicationUsage rows by client id, MAC and IP."""
+        for row in rows or []:
+            apps = []
+            for a in row.get("applicationUsage") or []:
+                b = (float(a.get("received") or 0) + float(a.get("sent") or 0)) * KB
+                if b > 0:
+                    apps.append({"name": a.get("application") or "Unknown", "bytes": b})
+            if not apps:
+                continue
+            apps.sort(key=lambda a: a["bytes"], reverse=True)
+            keys = {row.get("clientId"), (row.get("clientMac") or "").lower(), row.get("clientIp"), force_key}
+            for k in keys:
+                if k:
+                    by_key[k] = apps
+
+    @staticmethod
+    def _apps_for(d: dict, by_key: dict) -> list[dict]:
+        for k in (d.get("id"), (d.get("mac") or "").lower(), d.get("ip")):
+            if k and k in by_key:
+                return by_key[k]
+        return []
+
     async def _async_update_data(self) -> dict[str, Any]:
         now = dt_util.now()
         midnight = dt_util.start_of_local_day()
@@ -83,6 +107,20 @@ class MerakiUsageCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             app_rows = await self.api.client_app_usage(
                 self.network_id, [d["id"] for d in top if d["id"]], timespan
             )
+            apps_by_key: dict[str, list[dict]] = {}
+            self._index_app_rows(app_rows, apps_by_key)
+
+            # Retry any top device the batch call missed, one at a time
+            missing = [d for d in top if not self._apps_for(d, apps_by_key)]
+            for d in missing[:6]:
+                if not d["id"]:
+                    continue
+                try:
+                    rows = await self.api.client_app_usage(self.network_id, [d["id"]], timespan)
+                except MerakiApiError as err:
+                    _LOGGER.debug("App usage for %s failed: %s", d["name"], err)
+                    continue
+                self._index_app_rows(rows, apps_by_key, force_key=d["id"])
         except MerakiAuthError as err:
             raise ConfigEntryAuthFailed(str(err)) from err
         except MerakiApiError as err:
@@ -90,20 +128,13 @@ class MerakiUsageCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         except Exception as err:  # network errors, timeouts
             raise UpdateFailed(f"Meraki request failed: {err}") from err
 
-        apps_by_client: dict[str, list[dict]] = {}
-        for row in app_rows or []:
-            cid = row.get("clientId")
-            apps = []
-            for a in row.get("applicationUsage") or []:
-                b = (float(a.get("received") or 0) + float(a.get("sent") or 0)) * KB
-                if b > 0:
-                    apps.append({"name": a.get("application") or "Unknown", "bytes": b})
-            apps.sort(key=lambda a: a["bytes"], reverse=True)
-            apps_by_client[cid] = apps
+        still_missing = [d["name"] for d in top if not self._apps_for(d, apps_by_key)]
+        if still_missing:
+            _LOGGER.debug("No application usage from Meraki for: %s", still_missing)
 
         devices = []
         for d in top:
-            apps = apps_by_client.get(d["id"], [])
+            apps = self._apps_for(d, apps_by_key)
             shown = apps[:APPS_PER_DEVICE]
             other = sum(a["bytes"] for a in apps[APPS_PER_DEVICE:])
             if other > 0:
@@ -155,4 +186,5 @@ class MerakiUsageCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             "other_devices": other_devices,
             "not_broken_down": round(not_broken_down),
             "client_count": len(ranked),
+            "apps_missing": still_missing,
         }

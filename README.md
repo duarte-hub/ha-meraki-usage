@@ -17,6 +17,8 @@ It creates:
 - `sensor.meraki_data_usage_internet_usage_today`: GB since midnight (`total_increasing`, so it keeps long-term daily statistics). The full breakdown is in its attributes, and those attributes are left out of the recorder.
 - `sensor.meraki_data_usage_clients_with_traffic_today`
 
+The `apps_missing` attribute lists any top devices that Meraki returned no application data for.
+
 "Not broken down" is traffic the MX counted on its uplinks but couldn't attribute to a client.
 
 ## Install
@@ -31,7 +33,7 @@ It creates:
 Options: poll interval (5–60 min) and how many devices get the per-app breakdown (3–20).
 
 ### Card
-Add `card/meraki-usage-card.js` as a dashboard resource of type `module`. For example, copy it to `/config/www/` and register `/local/meraki-usage-card.js`. Then use the card:
+The integration serves and loads the card for you, so there's no resource to add, and HACS updates also update the card. Use it on any dashboard:
 
 ```yaml
 type: custom:meraki-usage-card
@@ -42,7 +44,7 @@ height: 460               # optional, sankey height
 days: 30                  # optional, history strip length
 ```
 
-Panel view recommended.
+Panel view recommended. Hover over a line, device or app to highlight its flows and see its share of today's usage. On touch screens, tap to pin and tap again to clear.
 
 ## Requirements
 - A Meraki network with an MX appliance.
