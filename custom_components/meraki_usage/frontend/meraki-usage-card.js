@@ -1,5 +1,5 @@
 /* meraki-usage-card: Sankey of today's internet usage (line \u2192 home \u2192 device \u2192 app) */
-const MUC_VERSION = "0.1.2";
+const MUC_VERSION = "0.2.0";
 
 const DEVICE_COLORS = ["#4fc3f7", "#b39ddb", "#f06292", "#4db6ac", "#ffb74d", "#ff8a65",
   "#7986cb", "#aed581", "#e57373", "#9575cd", "#4dd0e1", "#dce775", "#a1887f", "#90a4ae",
@@ -14,6 +14,19 @@ function fmt(b) {
   if (b >= 1e6) return Math.round(b / 1e6) + " MB";
   if (b >= 1e3) return Math.round(b / 1e3) + " KB";
   return Math.round(b) + " B";
+}
+function rate(bps) {
+  bps = Number(bps) || 0;
+  if (bps >= 1e9) return (bps / 1e9).toFixed(1) + " Gb/s";
+  if (bps >= 1e6) return (bps / 1e6).toFixed(1) + " Mb/s";
+  if (bps >= 1e3) return Math.round(bps / 1e3) + " kb/s";
+  return Math.round(bps) + " b/s";
+}
+function dur(sec) {
+  sec = Math.round(Number(sec) || 0);
+  if (sec >= 3600) return Math.floor(sec / 3600) + "h " + Math.floor((sec % 3600) / 60) + "m";
+  if (sec >= 60) return Math.floor(sec / 60) + "m " + (sec % 60) + "s";
+  return sec + "s";
 }
 function esc(s) {
   return String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
@@ -73,7 +86,7 @@ class MerakiUsageCard extends HTMLElement {
 
     // Column 2: devices
     const devs = (a.devices || []).map((d, i) => ({
-      name: d.name, v: d.down + d.up, down: d.down, up: d.up, apps: d.apps || [],
+      name: d.name, ip: d.ip, v: d.down + d.up, down: d.down, up: d.up, apps: d.apps || [],
       color: DEVICE_COLORS[i % DEVICE_COLORS.length],
     }));
     const od = a.other_devices || {};
@@ -139,7 +152,8 @@ class MerakiUsageCard extends HTMLElement {
         let sub = `${fmt(n.v)} \u00b7 ${((n.v / total) * 100).toFixed(1)}% of today`;
         if (n.down != null && n.up != null) sub += `<br>\u2193 ${fmt(n.down)} &nbsp; \u2191 ${fmt(n.up)}`;
         if (n.nbd) sub += `<br>Counted on the uplinks, not tied to a client`;
-        this._info[n.key] = { title: esc(n.name), sub, color: n.color };
+        if (ci === 2 && n.ip && this._liveOk) sub += `<br><i>Click for live flows</i>`;
+        this._info[n.key] = { title: esc(n.name), sub, color: n.color, ip: ci === 2 ? n.ip : null, name: n.name };
       });
     });
 
@@ -233,9 +247,77 @@ class MerakiUsageCard extends HTMLElement {
     svg.addEventListener("mouseleave", () => { if (!pinned) clear(); });
     svg.addEventListener("click", (ev) => {
       const el = target(ev);
+      const info = el && el.dataset.n ? this._info[el.dataset.n] : null;
+      if (info && info.ip && this._liveOk) {
+        pinned = null; clear();
+        this._openLive(info);
+        return;
+      }
       if (!el || pinned === el) { pinned = null; clear(); return; }
       pinned = el; show(el, ev);
     });
+  }
+
+  _openLive(info) {
+    this._live = { ip: info.ip, name: info.name, color: info.color, data: null, err: null, at: null };
+    this._renderLive();
+    this._pollLive();
+    clearInterval(this._liveTimer);
+    this._liveTimer = setInterval(() => this._pollLive(), 3000);
+    const el = this.shadowRoot.querySelector(".live");
+    if (el) el.scrollIntoView({ behavior: "smooth", block: "nearest" });
+  }
+
+  _closeLive() {
+    clearInterval(this._liveTimer);
+    this._live = null;
+    this._renderLive();
+  }
+
+  async _pollLive() {
+    const live = this._live;
+    if (!live || !this._hass) return;
+    if (document.hidden) return;
+    try {
+      const res = await this._hass.callWS({ type: "meraki_usage/host_flows", ip: live.ip, limit: 40 });
+      if (this._live !== live) return;
+      live.data = res; live.err = null; live.at = new Date();
+    } catch (e) {
+      if (this._live !== live) return;
+      live.err = (e && (e.message || e.code)) || "Request failed";
+    }
+    this._renderLive();
+  }
+
+  _renderLive() {
+    const box = this.shadowRoot && this.shadowRoot.querySelector(".live");
+    if (!box) return;
+    const live = this._live;
+    if (!live) { box.innerHTML = ""; box.style.display = "none"; return; }
+    box.style.display = "block";
+    const flows = ((live.data && live.data.flows) || []).slice().sort((a, b) => (b.bps || 0) - (a.bps || 0) || (b.bytes || 0) - (a.bytes || 0));
+    const totalBps = flows.reduce((t, f) => t + (Number(f.bps) || 0), 0);
+    const when = live.at ? live.at.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" }) : "\u2026";
+    let body;
+    if (live.err) body = `<div class="empty">${esc(live.err)}</div>`;
+    else if (!live.data) body = `<div class="empty">Loading flows\u2026</div>`;
+    else if (!flows.length) body = `<div class="empty">No active flows for this host right now.</div>`;
+    else body = `<table class="lt"><thead><tr><th>Peer</th><th>Service</th><th>App</th><th>Rate</th><th>\u2193 Down</th><th>\u2191 Up</th><th>Age</th></tr></thead><tbody>${flows.map((f) => `
+      <tr><td><div>${esc(f.peer || f.peer_ip || "?")}</div>${f.peer && f.peer !== f.peer_ip ? `<div class="ip">${esc(f.peer_ip || "")}</div>` : ""}</td>
+      <td>${esc(f.l4 || "")}${f.port ? "/" + esc(f.port) : ""}</td><td>${esc(f.app || "")}</td>
+      <td class="r">${rate(f.bps)}</td><td>${fmt(f.down || 0)}</td><td>${fmt(f.up || 0)}</td><td>${dur(f.duration)}</td></tr>`).join("")}</tbody></table>`;
+    const count = live.data ? (live.data.total > flows.length ? `${flows.length} of ${live.data.total} flows` : `${flows.length} flows`) : "";
+    box.innerHTML = `<div class="lh"><span class="dot" style="background:${live.color}"></span><b>${esc(live.name)}</b>
+      <span class="ip">${esc(live.ip)}</span><span class="sp"></span>
+      <span class="lm">${count}${flows.length ? " \u00b7 " + rate(totalBps) : ""} \u00b7 live from ntopng \u00b7 ${when}</span>
+      <button class="x" title="Close">\u2715</button></div>${body}`;
+    box.querySelector(".x").addEventListener("click", () => this._closeLive());
+  }
+
+  disconnectedCallback() { clearInterval(this._liveTimer); }
+
+  connectedCallback() {
+    if (this._live && !this._liveTimer) this._liveTimer = setInterval(() => this._pollLive(), 3000);
   }
 
   _strip(todayGB) {
@@ -268,6 +350,7 @@ class MerakiUsageCard extends HTMLElement {
     } else {
       const a = st.attributes;
       const totalGB = parseFloat(st.state);
+      this._liveOk = !!a.live_flows;
       const m = this._model(a, totalGB * 1e9);
       const upd = a.updated ? new Date(a.updated).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "";
       const rows = m.devs.filter((d) => !d.nbd).map((d) => {
@@ -279,6 +362,7 @@ class MerakiUsageCard extends HTMLElement {
       body = `
         <div class="sub">Internet lines: ${fmt(totalGB * 1e9)} today \u00b7 devices and apps since midnight \u00b7 updated ${esc(upd)}</div>
         <div class="sankey">${this._sankey(m)}<div class="tip"></div></div>
+        <div class="live" style="display:none"></div>
         ${nbd}
         <table><thead><tr><th>Device</th><th>\u2193 Down</th><th>\u2191 Up</th><th>Top apps</th></tr></thead><tbody>${rows}</tbody></table>
         ${m.devs.some((d) => (d.apps || []).some((x) => x.est)) ? `<div class="sub">~ estimated: Meraki had no per-app data for that device, so its traffic is split by the network-wide app mix (fainter flows).</div>` : ""}
@@ -319,9 +403,19 @@ class MerakiUsageCard extends HTMLElement {
         .dv { font-size: 15px; font-weight: 600; color: var(--primary-text-color); }
         .day.today .dv { color: #66bb6a; }
         .empty { padding: 24px; color: var(--secondary-text-color); }
+        .live { border: 1px solid var(--divider-color); border-radius: 10px; padding: 10px 12px; margin: 10px 0 14px; }
+        .lh { display: flex; align-items: center; gap: 8px; font-size: 14px; color: var(--primary-text-color); margin-bottom: 6px; }
+        .lh .sp { flex: 1; }
+        .lh .lm, .ip { font-size: 11px; color: var(--secondary-text-color); }
+        .lh .x { background: none; border: none; color: var(--secondary-text-color); font-size: 16px; cursor: pointer; padding: 2px 6px; }
+        table.lt { margin: 0; font-size: 12px; }
+        table.lt td { padding: 4px; vertical-align: top; }
+        table.lt td:nth-child(2), table.lt td:nth-child(3) { font-weight: 400; }
+        table.lt td.r { font-weight: 600; white-space: nowrap; }
       </style>
       <ha-card><div class="title">${esc(this._config.title || "Data usage today")}</div>${body}</ha-card>`;
     this._bind();
+    this._renderLive();
   }
 
   static getStubConfig() { return { entity: "sensor.meraki_data_usage_internet_usage_today" }; }

@@ -51,7 +51,7 @@ class UsageTodaySensor(_Base):
     _attr_native_unit_of_measurement = UnitOfInformation.GIGABYTES
     _attr_suggested_display_precision = 2
     _unrecorded_attributes = frozenset(
-        {"lines", "devices", "other_devices", "not_broken_down", "since", "updated", "apps_missing"}
+        {"lines", "devices", "other_devices", "not_broken_down", "since", "updated", "apps_missing", "live_flows"}
     )
 
     def __init__(self, coordinator, entry) -> None:
@@ -73,6 +73,7 @@ class UsageTodaySensor(_Base):
             "other_devices": d.get("other_devices", {}),
             "not_broken_down": d.get("not_broken_down", 0),
             "apps_missing": d.get("apps_missing", []),
+            "live_flows": bool(getattr(self.coordinator, "ntopng", None)),
         }
 
 

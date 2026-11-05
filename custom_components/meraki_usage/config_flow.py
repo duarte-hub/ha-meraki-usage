@@ -8,10 +8,13 @@ import voluptuous as vol
 from homeassistant import config_entries
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
+from homeassistant.helpers.selector import TextSelector, TextSelectorConfig, TextSelectorType
 
 from .api import MerakiApi, MerakiApiError, MerakiAuthError
+from .ntopng import NtopngApi, NtopngError
 from .const import (
     CONF_API_KEY, CONF_NETWORK_ID, CONF_ORG_ID, CONF_SCAN_MINUTES, CONF_TOP_DEVICES,
+    CONF_NTOPNG_IFID, CONF_NTOPNG_PASSWORD, CONF_NTOPNG_TOKEN, CONF_NTOPNG_URL, CONF_NTOPNG_USER,
     DEFAULT_SCAN_MINUTES, DEFAULT_TOP_DEVICES, DOMAIN,
 )
 
@@ -102,15 +105,41 @@ class MerakiUsageConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
 class MerakiUsageOptionsFlow(config_entries.OptionsFlow):
     async def async_step_init(self, user_input: dict[str, Any] | None = None):
-        if user_input is not None:
-            return self.async_create_entry(data=user_input)
+        errors: dict[str, str] = {}
         o = self.config_entry.options
+        if user_input is not None:
+            url = (user_input.get(CONF_NTOPNG_URL) or "").strip()
+            user_input[CONF_NTOPNG_URL] = url
+            # Keep the stored secret when the field is left blank
+            for k in (CONF_NTOPNG_PASSWORD, CONF_NTOPNG_TOKEN):
+                if not user_input.get(k) and o.get(k):
+                    user_input[k] = o[k]
+            if url:
+                api = NtopngApi(
+                    async_get_clientsession(self.hass), url, user_input.get(CONF_NTOPNG_USER),
+                    user_input.get(CONF_NTOPNG_PASSWORD), user_input.get(CONF_NTOPNG_TOKEN),
+                    user_input.get(CONF_NTOPNG_IFID, 0),
+                )
+                try:
+                    await api.check()
+                except NtopngError as err:
+                    errors["base"] = "ntopng_auth" if "credential" in str(err) else "ntopng_connect"
+            if not errors:
+                return self.async_create_entry(data=user_input)
+        secret = TextSelector(TextSelectorConfig(type=TextSelectorType.PASSWORD))
         return self.async_show_form(
             step_id="init",
+            errors=errors,
             data_schema=vol.Schema({
                 vol.Required(CONF_SCAN_MINUTES, default=o.get(CONF_SCAN_MINUTES, DEFAULT_SCAN_MINUTES)):
                     vol.All(vol.Coerce(int), vol.Range(min=5, max=60)),
                 vol.Required(CONF_TOP_DEVICES, default=o.get(CONF_TOP_DEVICES, DEFAULT_TOP_DEVICES)):
                     vol.All(vol.Coerce(int), vol.Range(min=3, max=20)),
+                vol.Optional(CONF_NTOPNG_URL, description={"suggested_value": o.get(CONF_NTOPNG_URL, "")}): str,
+                vol.Optional(CONF_NTOPNG_USER, description={"suggested_value": o.get(CONF_NTOPNG_USER, "")}): str,
+                vol.Optional(CONF_NTOPNG_PASSWORD): secret,
+                vol.Optional(CONF_NTOPNG_TOKEN): secret,
+                vol.Required(CONF_NTOPNG_IFID, default=o.get(CONF_NTOPNG_IFID, 0)):
+                    vol.All(vol.Coerce(int), vol.Range(min=0, max=64)),
             }),
         )

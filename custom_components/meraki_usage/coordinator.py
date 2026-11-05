@@ -44,6 +44,7 @@ class MerakiUsageCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self.org_id = org_id
         self.network_id = network_id
         self.top_devices = top_devices
+        self.ntopng = None
         self._day = None
         self._max_total = 0
 

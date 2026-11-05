@@ -47,6 +47,23 @@ days: 30                  # optional, history strip length
 
 Panel view recommended. Hover over a line, device or app to highlight its flows and see its share of today's usage. On touch screens, tap to pin and tap again to clear.
 
+## Live flows (optional, via ntopng)
+
+Click a device in the Sankey to open a panel with its active flows: peer, service, app, rate and bytes, refreshed every 3 seconds. The Meraki API has no live traffic endpoint, so this uses NetFlow from the MX:
+
+1. Run **ntopng** (Community is fine) with **[netflow2ng](https://github.com/synfinatic/netflow2ng)** as a free NetFlow v9 collector. nProbe also works but needs a licence. Example with host networking:
+   ```sh
+   docker run -d --name ntopng-redis --net host redis:alpine redis-server --port 6390 --bind 127.0.0.1
+   docker run -d --name netflow2ng --net host synfinatic/netflow2ng -a 0.0.0.0:2055 -m 127.0.0.1:8091 -z tcp://127.0.0.1:5556
+   docker run -d --name ntopng --net host -v /path/ntopng:/var/lib/ntopng ntop/ntopng:latest \
+     --community -r 127.0.0.1:6390@0 -i tcp://127.0.0.1:5556 -w 3001 -m 192.168.0.0/16 --zmq-disable-encryption
+   ```
+2. In Meraki go to Network-wide → General → **Reporting** and set **NetFlow traffic reporting** to *enabled*, with the collector at `<host>:2055`.
+3. In ntopng (`http://<host>:3001`), change the default `admin` password. Optionally create an API token under the user's settings.
+4. In Home Assistant open **Meraki Data Usage → Configure**, then set the ntopng URL and either the username and password or the API token.
+
+NetFlow from the MX arrives in flow-export intervals, so "live" means seconds to about a minute behind.
+
 ## Requirements
 - A Meraki network with an MX appliance.
 - **Traffic Analysis** enabled (Network-wide → General). Set it to *Detailed* for the best app names.
