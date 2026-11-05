@@ -1,0 +1,32 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Meraki Data Usage",
+        "description": "Leave the API key blank to reuse the key from your existing Meraki integration.",
+        "data": { "api_key": "Meraki API key (optional)" }
+      },
+      "network": {
+        "title": "Choose network",
+        "data": { "network_id": "Network with the MX appliance" }
+      }
+    },
+    "error": {
+      "no_key": "No API key given and none found in the Meraki integration.",
+      "invalid_auth": "The API key was rejected.",
+      "cannot_connect": "Could not reach the Meraki API.",
+      "no_appliance": "No network with an MX appliance was found."
+    },
+    "abort": { "already_configured": "This network is already set up." }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "data": {
+          "scan_minutes": "Poll interval (minutes)",
+          "top_devices": "Devices to break down by app"
+        }
+      }
+    }
+  }
+}
