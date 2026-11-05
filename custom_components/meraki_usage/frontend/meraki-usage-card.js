@@ -1,5 +1,5 @@
 /* meraki-usage-card: Sankey of today's internet usage (line \u2192 home \u2192 device \u2192 app) */
-const MUC_VERSION = "0.1.1";
+const MUC_VERSION = "0.1.2";
 
 const DEVICE_COLORS = ["#4fc3f7", "#b39ddb", "#f06292", "#4db6ac", "#ffb74d", "#ff8a65",
   "#7986cb", "#aed581", "#e57373", "#9575cd", "#4dd0e1", "#dce775", "#a1887f", "#90a4ae",
@@ -78,7 +78,7 @@ class MerakiUsageCard extends HTMLElement {
     }));
     const od = a.other_devices || {};
     if ((od.down || 0) + (od.up || 0) > 0)
-      devs.push({ name: `Other devices (${od.count})`, v: od.down + od.up, down: od.down, up: od.up, apps: [], color: GREY, other: true });
+      devs.push({ name: `Other devices (${od.count})`, v: od.down + od.up, down: od.down, up: od.up, apps: od.apps || [], color: GREY, other: true });
     if ((a.not_broken_down || 0) > 0)
       devs.push({ name: "Not broken down", v: a.not_broken_down, apps: [], color: "#37474f", nbd: true });
 
@@ -98,7 +98,7 @@ class MerakiUsageCard extends HTMLElement {
       if (d.v - used > d.v * 0.01) list.push({ name: "Other apps", bytes: d.v - used });
       list.forEach((x) => {
         appTotals.set(x.name, (appTotals.get(x.name) || 0) + x.bytes);
-        devApp.push([di, x.name, x.bytes]);
+        devApp.push([di, x.name, x.bytes, !!x.est]);
       });
     });
     const ranked = [...appTotals.entries()].filter(([n]) => n !== "Other apps").sort((p, q) => q[1] - p[1]);
@@ -109,12 +109,12 @@ class MerakiUsageCard extends HTMLElement {
     const appIdx = new Map(apps.map((x, i) => [x.name, i]));
     const otherIdx = appIdx.get("Other apps");
     const merged = new Map();
-    devApp.forEach(([di, n, b]) => {
+    devApp.forEach(([di, n, b, est]) => {
       const ai = keep.has(n) ? appIdx.get(n) : otherIdx;
-      const k = di + "|" + ai;
+      const k = di + "|" + ai + "|" + (est ? 1 : 0);
       merged.set(k, (merged.get(k) || 0) + b);
     });
-    const devAppLinks = [...merged.entries()].map(([k, v]) => { const [s, t] = k.split("|").map(Number); return { s, t, v }; });
+    const devAppLinks = [...merged.entries()].map(([k, v]) => { const [s, t, e] = k.split("|").map(Number); return { s, t, v, est: e === 1 }; });
 
     return { lines, home, devs, apps, devAppLinks };
   }
@@ -145,7 +145,7 @@ class MerakiUsageCard extends HTMLElement {
 
     const path = (x0, y0, x1, y1, h, color, op, s, t, tip) => {
       const mx = (x0 + x1) / 2;
-      return `<path class="lk" data-s="${s}" data-t="${t}" data-tip="${esc(tip)}" d="M${x0},${y0} C${mx},${y0} ${mx},${y1} ${x1},${y1} L${x1},${y1 + h} C${mx},${y1 + h} ${mx},${y0 + h} ${x0},${y0 + h} Z" fill="${color}" fill-opacity="${op}"/>`;
+      return `<path class="lk${op < 0.2 ? " est" : ""}" data-s="${s}" data-t="${t}" data-tip="${esc(tip)}" d="M${x0},${y0} C${mx},${y0} ${mx},${y1} ${x1},${y1} L${x1},${y1 + h} C${mx},${y1 + h} ${mx},${y0 + h} ${x0},${y0 + h} Z" fill="${color}" fill-opacity="${op}"/>`;
     };
     const band = (s, t, v, color) => {
       const h = v * k;
@@ -159,8 +159,8 @@ class MerakiUsageCard extends HTMLElement {
     let links = "";
     m.lines.forEach((l) => (links += band(l, m.home, l.v, l.color)));
     m.devs.forEach((d) => (links += band(m.home, d, d.v, d.color)));
-    const byDev = [...m.devAppLinks].sort((p, q) => p.s - q.s || p.t - q.t);
-    const tOrder = [...byDev].sort((p, q) => p.t - q.t || p.s - q.s);
+    const byDev = [...m.devAppLinks].sort((p, q) => p.s - q.s || p.t - q.t || p.est - q.est);
+    const tOrder = [...byDev].sort((p, q) => p.t - q.t || p.est - q.est || p.s - q.s);
     const tOff = new Map();
     m.apps.forEach((a) => (a.in = 0));
     tOrder.forEach((l) => { const a = m.apps[l.t]; tOff.set(l, a.in); a.in += l.v * k; });
@@ -168,8 +168,8 @@ class MerakiUsageCard extends HTMLElement {
       const d = m.devs[l.s], a = m.apps[l.t];
       if (!d || !a) return;
       const h = l.v * k;
-      if (h >= 0.3) links += path(d.x + NW, d.y + d.out, a.x, a.y + tOff.get(l), h, d.color, 0.32, d.key, a.key,
-        `${d.name} \u2192 ${a.name}|${fmt(l.v)} \u00b7 ${((l.v / (d.v || 1)) * 100).toFixed(0)}% of ${d.name}`);
+      if (h >= 0.3) links += path(d.x + NW, d.y + d.out, a.x, a.y + tOff.get(l), h, d.color, l.est ? 0.16 : 0.32, d.key, a.key,
+        `${d.name} \u2192 ${a.name}${l.est ? " (estimated)" : ""}|${fmt(l.v)} \u00b7 ${((l.v / (d.v || 1)) * 100).toFixed(0)}% of ${d.name}${l.est ? "<br>Meraki had no per-app data for this device, so this is split by the network-wide app mix" : ""}`);
       d.out += h;
     });
 
@@ -271,7 +271,7 @@ class MerakiUsageCard extends HTMLElement {
       const m = this._model(a, totalGB * 1e9);
       const upd = a.updated ? new Date(a.updated).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "";
       const rows = m.devs.filter((d) => !d.nbd).map((d) => {
-        const top = (d.apps || []).filter((x) => x.name !== "Other apps").slice(0, 3).map((x) => esc(x.name)).join(", ");
+        const top = (d.apps || []).filter((x) => x.name !== "Other apps").slice(0, 3).map((x) => (x.est ? "~" : "") + esc(x.name)).join(", ");
         return `<tr><td><span class="dot" style="background:${d.color}"></span>${esc(d.name)}</td><td>${fmt(d.down || 0)}</td><td>${fmt(d.up || 0)}</td><td class="apps">${top}</td></tr>`;
       }).join("");
       const nbd = (a.not_broken_down || 0) > 0
@@ -281,6 +281,7 @@ class MerakiUsageCard extends HTMLElement {
         <div class="sankey">${this._sankey(m)}<div class="tip"></div></div>
         ${nbd}
         <table><thead><tr><th>Device</th><th>\u2193 Down</th><th>\u2191 Up</th><th>Top apps</th></tr></thead><tbody>${rows}</tbody></table>
+        ${m.devs.some((d) => (d.apps || []).some((x) => x.est)) ? `<div class="sub">~ estimated: Meraki had no per-app data for that device, so its traffic is split by the network-wide app mix (fainter flows).</div>` : ""}
         <div class="sub">Last ${this._config.days} days \u00b7 GB per day</div>
         <div class="strip">${this._strip(totalGB)}</div>`;
     }
@@ -296,6 +297,7 @@ class MerakiUsageCard extends HTMLElement {
         .sankey .lk, .sankey .nd, .sankey .lb { cursor: pointer; transition: opacity .15s, fill-opacity .15s; }
         .sankey svg.hl .lk { fill-opacity: .07; }
         .sankey svg.hl .lk.on { fill-opacity: .6; }
+        .sankey svg.hl .lk.est.on { fill-opacity: .35; }
         .sankey svg.hl .nd, .sankey svg.hl .lb { opacity: .25; }
         .sankey svg.hl .nd.on, .sankey svg.hl .lb.on { opacity: 1; }
         .tip { display: none; position: absolute; pointer-events: none; z-index: 2; background: var(--card-background-color, #1c1c1c); border: 1px solid var(--divider-color); border-radius: 8px; padding: 8px 10px; font-size: 12px; box-shadow: 0 4px 12px rgba(0,0,0,.35); max-width: 260px; }

@@ -11,13 +11,14 @@ The `meraki_usage` integration polls the Meraki Dashboard API every 10 minutes (
 | Per-uplink usage (WAN 1 / WAN 2 / cellular) | `GET /organizations/{org}/appliance/uplinks/usage/byNetwork` |
 | Per-client usage | `GET /networks/{net}/clients` |
 | Per-client application usage (top N devices) | `GET /networks/{net}/clients/applicationUsage` |
+| Network-wide application usage | `GET /organizations/{org}/summary/top/applications/byUsage` (falls back to `/networks/{net}/traffic`) |
 
 It creates:
 
 - `sensor.meraki_data_usage_internet_usage_today`: GB since midnight (`total_increasing`, so it keeps long-term daily statistics). The full breakdown is in its attributes, and those attributes are left out of the recorder.
 - `sensor.meraki_data_usage_clients_with_traffic_today`
 
-The `apps_missing` attribute lists any top devices that Meraki returned no application data for.
+The `apps_missing` attribute lists any top devices that Meraki returned no application data for. Their traffic is split by the network-wide app mix, after removing what's already attributed to other devices. In the card these flows are drawn fainter, marked `~` in the table and labelled *estimated* in tooltips.
 
 "Not broken down" is traffic the MX counted on its uplinks but couldn't attribute to a client.
 

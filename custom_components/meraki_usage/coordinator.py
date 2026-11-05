@@ -64,6 +64,27 @@ class MerakiUsageCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 if k:
                     by_key[k] = apps
 
+    async def _network_apps(self, timespan: int) -> dict[str, float]:
+        """Network-wide bytes per application; empty dict if unavailable."""
+        apps: dict[str, float] = {}
+        try:
+            for r in await self.api.top_apps(self.org_id, timespan) or []:
+                b = float(r.get("total") or 0) * KB * KB  # MB -> bytes
+                if r.get("application") and b > 0:
+                    apps[r["application"]] = apps.get(r["application"], 0) + b
+            if apps:
+                return apps
+        except MerakiApiError as err:
+            _LOGGER.debug("Org top applications unavailable: %s", err)
+        try:
+            for r in await self.api.network_traffic(self.network_id, timespan) or []:
+                b = (float(r.get("sent") or 0) + float(r.get("recv") or 0)) * KB
+                if r.get("application") and b > 0:
+                    apps[r["application"]] = apps.get(r["application"], 0) + b
+        except MerakiApiError as err:
+            _LOGGER.debug("Network traffic unavailable: %s", err)
+        return apps
+
     @staticmethod
     def _apps_for(d: dict, by_key: dict) -> list[dict]:
         for k in (d.get("id"), (d.get("mac") or "").lower(), d.get("ip")):
@@ -121,6 +142,8 @@ class MerakiUsageCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     _LOGGER.debug("App usage for %s failed: %s", d["name"], err)
                     continue
                 self._index_app_rows(rows, apps_by_key, force_key=d["id"])
+
+            net_apps = await self._network_apps(timespan)
         except MerakiAuthError as err:
             raise ConfigEntryAuthFailed(str(err)) from err
         except MerakiApiError as err:
@@ -132,23 +155,55 @@ class MerakiUsageCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         if still_missing:
             _LOGGER.debug("No application usage from Meraki for: %s", still_missing)
 
+        # Estimate apps for devices Meraki didn't classify, using the network-wide
+        # app mix minus what was already attributed to specific devices.
+        classified: dict[str, float] = {}
+        for d in top:
+            for a in self._apps_for(d, apps_by_key):
+                classified[a["name"]] = classified.get(a["name"], 0) + a["bytes"]
+        residual = {n: b - classified.get(n, 0) for n, b in net_apps.items()}
+        residual = {n: b for n, b in residual.items() if b > 0}
+        res_total = sum(residual.values())
+        missing_devs = [d for d in top if not self._apps_for(d, apps_by_key)]
+        rest_total = sum(d["down"] + d["up"] for d in rest)
+        unc_total = sum(d["down"] + d["up"] for d in missing_devs) + rest_total
+        frac = min(1.0, res_total / unc_total) if unc_total > 0 and res_total > 0 else 0.0
+        mix = sorted(residual.items(), key=lambda kv: kv[1], reverse=True)
+
+        def estimate(total: float) -> list[dict]:
+            if frac <= 0 or total <= 0:
+                return []
+            out, used = [], 0.0
+            for name, b in mix[:APPS_PER_DEVICE]:
+                v = total * frac * b / res_total
+                if v >= 1:
+                    out.append({"name": name, "bytes": round(v), "est": True})
+                    used += v
+            if total - used > 1:
+                out.append({"name": "Other apps", "bytes": round(total - used), "est": True})
+            return out
+
         devices = []
         for d in top:
             apps = self._apps_for(d, apps_by_key)
-            shown = apps[:APPS_PER_DEVICE]
-            other = sum(a["bytes"] for a in apps[APPS_PER_DEVICE:])
-            if other > 0:
-                shown.append({"name": "Other apps", "bytes": other})
+            if apps:
+                shown = [{"name": a["name"], "bytes": round(a["bytes"])} for a in apps[:APPS_PER_DEVICE]]
+                other = sum(a["bytes"] for a in apps[APPS_PER_DEVICE:])
+                if other > 0:
+                    shown.append({"name": "Other apps", "bytes": round(other)})
+            else:
+                shown = estimate(d["down"] + d["up"])
             devices.append({
                 "name": d["name"], "mac": d["mac"], "ip": d["ip"],
                 "down": round(d["down"]), "up": round(d["up"]),
-                "apps": [{"name": a["name"], "bytes": round(a["bytes"])} for a in shown],
+                "apps": shown,
             })
 
         other_devices = {
             "count": len(rest),
             "down": round(sum(d["down"] for d in rest)),
             "up": round(sum(d["up"] for d in rest)),
+            "apps": estimate(rest_total),
         }
 
         lines = []

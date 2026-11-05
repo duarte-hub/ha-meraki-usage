@@ -92,6 +92,20 @@ class MerakiApi:
             {"clients": ",".join(client_ids), "timespan": timespan, "perPage": 1000},
         )
 
+    async def top_apps(self, org_id: str, timespan: int) -> list[dict]:
+        """Org-wide application usage (MB) as seen by the MX."""
+        return await self.get(
+            f"/organizations/{org_id}/summary/top/applications/byUsage",
+            {"timespan": timespan, "quantity": 50},
+        )
+
+    async def network_traffic(self, network_id: str, timespan: int) -> list[dict]:
+        """Network traffic by application/destination (KB). Timespan >= 2h."""
+        return await self.get(
+            f"/networks/{network_id}/traffic",
+            {"timespan": max(timespan, 7200), "deviceType": "combined"},
+        )
+
     async def uplink_usage(self, org_id: str, timespan: int) -> list[dict]:
         return await self.get(
             f"/organizations/{org_id}/appliance/uplinks/usage/byNetwork",
