@@ -13,6 +13,10 @@ class NtopngError(Exception):
     """ntopng request failed."""
 
 
+class NtopngNotFound(NtopngError):
+    """ntopng has no record of the requested object (e.g. a host with no active flows)."""
+
+
 class NtopngApi:
     def __init__(self, session: aiohttp.ClientSession, url: str, user: str | None,
                  password: str | None, token: str | None, ifid: int = 0) -> None:
@@ -34,6 +38,8 @@ class NtopngApi:
             ) as resp:
                 if resp.status in (301, 302, 401, 403):
                     raise NtopngError("ntopng rejected the credentials")
+                if resp.status == 404:
+                    raise NtopngNotFound("ntopng returned HTTP 404")
                 if resp.status >= 400:
                     raise NtopngError(f"ntopng returned HTTP {resp.status}")
                 data = await resp.json(content_type=None)
@@ -47,10 +53,15 @@ class NtopngApi:
         await self._get("/lua/rest/v2/get/ntopng/interfaces.lua", {})
 
     async def host_flows(self, ip: str, limit: int = 40) -> dict:
-        rsp = await self._get("/lua/rest/v2/get/flow/active.lua", {
-            "ifid": self._ifid, "host": ip, "perPage": limit, "currentPage": 1,
-            "sortColumn": "bytes", "sortOrder": "desc",
-        })
+        # ntopng answers 404 NOT_FOUND when the host isn't in its active host table,
+        # i.e. it has had no flows recently (idle, asleep, or not seen via NetFlow yet).
+        try:
+            rsp = await self._get("/lua/rest/v2/get/flow/active.lua", {
+                "ifid": self._ifid, "host": ip, "perPage": limit, "currentPage": 1,
+                "sortColumn": "bytes", "sortOrder": "desc",
+            })
+        except NtopngNotFound:
+            return {"flows": [], "total": 0}
         rows = rsp.get("data", rsp) if isinstance(rsp, dict) else rsp
         flows = [self._norm(f, ip) for f in rows or [] if isinstance(f, dict)]
         total = rsp.get("recordsTotal") if isinstance(rsp, dict) else None
